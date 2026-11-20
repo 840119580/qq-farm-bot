@@ -10,6 +10,7 @@ import AccountModal from '@/components/AccountModal.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import PageTabs from '@/components/PageTabs.vue'
 import AutomationSettingsForm from '@/components/settings/AutomationSettingsForm.vue'
+import QQBotPushSettings from '@/components/settings/QQBotPushSettings.vue'
 import BagSeedPriorityItem from '@/components/settings/BagSeedPriorityItem.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
@@ -46,11 +47,11 @@ const userStore = useUserStore()
 const settingStore = useSettingStore()
 const statusStore = useStatusStore()
 
-type SettingsTab = 'account' | 'strategy' | 'automation' | 'system'
+type SettingsTab = 'account' | 'strategy' | 'automation' | 'push' | 'system'
 const storedTab = localStorage.getItem('settings-active-tab')
-const settingsTabKeys: SettingsTab[] = ['account', 'strategy', 'automation', 'system']
-// 牧场的自动化与养殖策略已移到「牧场策略」页，设置页只保留账号与系统。
-const ranchTabKeys: SettingsTab[] = ['account', 'system']
+const settingsTabKeys: SettingsTab[] = ['account', 'strategy', 'automation', 'push', 'system']
+// 牧场的自动化与养殖策略已移到「牧场策略」页，设置页只保留账号、推送与系统。
+const ranchTabKeys: SettingsTab[] = ['account', 'push', 'system']
 const queryTab = String(route.query.tab || '')
 const storedInitialTab = settingsTabKeys.includes(queryTab as SettingsTab)
   ? queryTab as SettingsTab
@@ -79,6 +80,7 @@ const tabs = [
   { key: 'account', label: '账号管理', icon: 'i-carbon-user-profile' },
   { key: 'strategy', label: '策略设置', icon: 'i-carbon-settings-adjust' },
   { key: 'automation', label: '自动控制', icon: 'i-carbon-settings-adjust' },
+  { key: 'push', label: '推送设置', icon: 'i-carbon-notification' },
   { key: 'system', label: '系统设置', icon: 'i-carbon-settings' },
 ] as const
 
@@ -1964,6 +1966,14 @@ async function handleResetSystemConfig() {
             :fertilizer-options="fertilizerOptions"
             @save="saveAutomationSettings"
           />
+        </div>
+
+        <!-- 推送设置 -->
+        <div v-else-if="activeTab === 'push'" class="space-y-4">
+          <h3 class="text-lg text-gray-900 font-bold dark:text-gray-100">
+            推送设置
+          </h3>
+          <QQBotPushSettings />
         </div>
 
         <!-- 系统设置 -->

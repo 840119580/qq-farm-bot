@@ -351,6 +351,74 @@ function mountAccountRoutes(app: Application, ctx: AdminContext): void {
         }
     });
 
+    // ===== QQ 机器人单聊推送（重要日志） =====
+    app.get('/api/settings/qq-bot-push', async (req: Request, res: Response) => {
+        try {
+            const svc = require('../../services/qq-bot-push').getActiveQqBotPush();
+            const saved = store.getQqBotPush ? store.getQqBotPush() : {};
+            const config = svc ? svc.getConfig() : saved;
+            const status = svc ? svc.getStatus() : {};
+            res.json({ ok: true, data: { config, status } });
+        } catch (e: any) {
+            handleApiError(res, e);
+        }
+    });
+
+    app.post('/api/settings/qq-bot-push', async (req: Request, res: Response) => {
+        try {
+            const svc = require('../../services/qq-bot-push').getActiveQqBotPush();
+            const body = (req.body && typeof req.body === 'object') ? req.body : {};
+            const config = svc ? svc.setConfig(body) : (store.setQqBotPush ? store.setQqBotPush(body) : body);
+            const status = svc ? svc.getStatus() : {};
+            res.json({ ok: true, data: { config, status } });
+        } catch (e: any) {
+            handleApiError(res, e);
+        }
+    });
+
+    app.post('/api/settings/qq-bot-push/test', async (req: Request, res: Response) => {
+        try {
+            const svc = require('../../services/qq-bot-push').getActiveQqBotPush();
+            if (!svc) return res.status(500).json({ ok: false, error: '推送服务未初始化' });
+            const result = await svc.testSend();
+            res.json({ ok: true, data: result, message: '测试消息已发送' });
+        } catch (e: any) {
+            return res.status(400).json({ ok: false, error: e?.message || '测试发送失败' });
+        }
+    });
+
+    app.post('/api/settings/qq-bot-push/capture', async (req: Request, res: Response) => {
+        try {
+            const svc = require('../../services/qq-bot-push').getActiveQqBotPush();
+            if (!svc) return res.status(500).json({ ok: false, error: '推送服务未初始化' });
+            svc.startCapture();
+            res.json({ ok: true, message: '已开始监听网关，请用 QQ 给机器人发一条消息' });
+        } catch (e: any) {
+            return res.status(400).json({ ok: false, error: e?.message || '启动捕获失败' });
+        }
+    });
+
+    app.get('/api/settings/qq-bot-push/users', async (req: Request, res: Response) => {
+        try {
+            const svc = require('../../services/qq-bot-push').getActiveQqBotPush();
+            const users = svc ? svc.getUsers() : [];
+            res.json({ ok: true, data: { users, currentOpenid: svc ? svc.getConfig().openid : '' } });
+        } catch (e: any) {
+            handleApiError(res, e);
+        }
+    });
+
+    app.post('/api/settings/qq-bot-push/select-user', async (req: Request, res: Response) => {
+        try {
+            const svc = require('../../services/qq-bot-push').getActiveQqBotPush();
+            if (!svc) return res.status(500).json({ ok: false, error: '推送服务未初始化' });
+            const config = svc.selectUser(String((req.body || {}).openid || ''));
+            res.json({ ok: true, data: { config } });
+        } catch (e: any) {
+            return res.status(400).json({ ok: false, error: e?.message || '选择用户失败' });
+        }
+    });
+
     // API: 获取配置
     app.get('/api/settings', async (req: Request, res: Response) => {
         try {

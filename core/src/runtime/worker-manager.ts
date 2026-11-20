@@ -29,6 +29,7 @@ interface WorkerManagerOptions {
     getOfflineAutoDeleteMs: () => number;
     triggerOfflineReminder: (payload: any) => void;
     sendConfiguredPush?: (payload: any) => Promise<void> | void;
+    onAccountOffline?: (payload: { accountId: string; accountName: string; reason: string; detail?: string }) => void;
     addOrUpdateAccount: (acc: any) => any;
     deleteAccount: (id: string) => void;
     onStatusSync?: (accountId: string, status: any, accountName?: string) => void;
@@ -52,6 +53,7 @@ function createWorkerManager(options: WorkerManagerOptions) {
         getOfflineAutoDeleteMs,
         triggerOfflineReminder,
         sendConfiguredPush,
+        onAccountOffline,
         addOrUpdateAccount,
         deleteAccount,
         onStatusSync,
@@ -312,6 +314,9 @@ function createWorkerManager(options: WorkerManagerOptions) {
                         reason: 'offline_timeout',
                         offlineMs,
                     });
+                    if (typeof onAccountOffline === 'function') {
+                        onAccountOffline({ accountId, accountName: worker.name, reason: 'offline_timeout', detail: `持续离线 ${Math.floor(offlineMs / 60000)} 分钟` });
+                    }
                     addAccountLog(
                         'offline_delete',
                         `账号 ${worker.name} 持续离线 ${offlineMin} 分钟，已自动删除`,
@@ -376,6 +381,9 @@ function createWorkerManager(options: WorkerManagerOptions) {
                 reason: `kickout:${reason}`,
                 offlineMs: 0,
             });
+            if (typeof onAccountOffline === 'function') {
+                onAccountOffline({ accountId, accountName: worker.name, reason: `kickout:${reason}`, detail: `被踢下线 (代码 ${reasonCode})：${reason}` });
+            }
             addAccountLog('kickout_stop', `账号 ${worker.name} 被踢下线，已自动停止`, accountId, worker.name, { reason, reasonCode, diagnostics });
             stopWorker(accountId);
         } else if (msg.type === 'account_disconnected') {
@@ -408,6 +416,9 @@ function createWorkerManager(options: WorkerManagerOptions) {
                 reason: `disconnect:${source}:${phase}:${code}`,
                 offlineMs: 0,
             });
+            if (typeof onAccountOffline === 'function') {
+                onAccountOffline({ accountId, accountName: worker.name, reason: `disconnect:${source}:${phase}:${code}`, detail: `连接断开：${reason}（${source}/${phase}，代码 ${code}）` });
+            }
             addAccountLog(
                 'disconnect_stop',
                 `账号 ${worker.name} 连接已断开，已停止运行并等待 Helper 刷新 Code 或重新扫码`,

@@ -9,6 +9,7 @@ const { createDataProvider } = require('./data-provider');
 const { createReloginReminderService } = require('./relogin-reminder');
 const { createRuntimeState } = require('./runtime-state');
 const { createWorkerManager } = require('./worker-manager');
+const { createQqBotPushService } = require('../services/qq-bot-push');
 
 const OPERATION_KEYS = ['harvest', 'farming', 'fertilize', 'plant', 'steal', 'helpFarming', 'taskClaim', 'sell', 'upgrade'];
 
@@ -60,6 +61,26 @@ function createRuntimeEngine(options: RuntimeEngineOptions = {}) {
         log,
     });
 
+    const qqBotPush = createQqBotPushService({
+        store,
+        log,
+        // 扫码重新登录后：用新 code 更新账号并重启上线。
+        // 用闭包延迟引用 dataProvider（在下面才创建，调用时已就绪）。
+        getAccount: (accountId: string) => {
+            const accounts = store.getAccounts();
+            return (accounts.accounts || []).find((a: any) => String(a.id) === String(accountId)) || null;
+        },
+        reloginAccount: async (accountId: string, patch: any) => {
+            try {
+                store.addOrUpdateAccount({ id: String(accountId), ...(patch || {}) });
+                return !!(dataProvider && dataProvider.restartAccount(accountId));
+            } catch (e: any) {
+                log('QQ机器人', `扫码后更新账号失败: ${e.message}`);
+                return false;
+            }
+        },
+    });
+
     const {
         getOfflineAutoDeleteMs,
         triggerOfflineReminder,
@@ -82,6 +103,9 @@ function createRuntimeEngine(options: RuntimeEngineOptions = {}) {
         getOfflineAutoDeleteMs,
         triggerOfflineReminder,
         sendConfiguredPush,
+        onAccountOffline: (payload: any) => {
+            try { qqBotPush.sendOfflineNotification(payload); } catch {}
+        },
         addOrUpdateAccount: store.addOrUpdateAccount,
         deleteAccount: store.deleteAccount,
         onStatusSync: (accountId: string, status: any, accountName?: string) => {
@@ -91,6 +115,7 @@ function createRuntimeEngine(options: RuntimeEngineOptions = {}) {
         onWorkerLog: (entry: any, accountId: string, accountName?: string) => {
             runtimeEvents.emit('worker_log', { entry, accountId, accountName });
             if (onLog) onLog(entry, accountId, accountName);
+            try { qqBotPush.enqueueLog(entry, accountName); } catch {}
         },
     });
     const dataProvider = createDataProvider({
@@ -167,6 +192,8 @@ function createRuntimeEngine(options: RuntimeEngineOptions = {}) {
             startAdminServer(dataProvider);
         }
 
+        try { qqBotPush.start(); } catch {}
+
         if (shouldAutoStartAccounts) {
             startAllAccounts();
         }
@@ -176,6 +203,7 @@ function createRuntimeEngine(options: RuntimeEngineOptions = {}) {
         for (const accountId of Object.keys(workers)) {
             stopWorker(accountId);
         }
+        try { qqBotPush.stop(); } catch {}
     }
 
     return {
@@ -183,6 +211,7 @@ function createRuntimeEngine(options: RuntimeEngineOptions = {}) {
         runtimeEvents,
         workers,
         dataProvider,
+        qqBotPush,
         start,
         startAllAccounts,
         stopAllAccounts,

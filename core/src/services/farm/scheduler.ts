@@ -285,6 +285,8 @@ async function runFarmOperation(
                     result: 'ok',
                     count: harvestable.length,
                     landIds: [...harvestable],
+                    itemName: status.harvestableInfo && status.harvestableInfo.length > 0
+                        ? status.harvestableInfo[0].name : '',
                 });
                 actions.push(`收获${harvestable.length}`);
                 recordOperation('harvest', harvestable.length);
