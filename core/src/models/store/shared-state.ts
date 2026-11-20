@@ -6,7 +6,7 @@ const { getDataFile, ensureDataDir } = require('../../config/runtime-paths');
 const { createConfigStorage } = require('./config-storage');
 const { storageError } = require('../../services/json-db');
 const { parseHourOfDay } = require('../../utils/hour-of-day');
-const { RANCH_AUTOMATION_DEFAULTS, normalizeRanchSetting } = require('../../config/ranch-automation');
+const { RANCH_AUTOMATION_DEFAULTS, normalizeRanchSetting, migrateRanchMarketAutomation } = require('../../config/ranch-automation');
 
 const STORE_FILE: string = getDataFile('store.json');
 const ACCOUNTS_FILE: string = getDataFile('accounts.json');
@@ -122,6 +122,7 @@ const DEFAULT_ACCOUNT_CONFIG: AccountConfig = {
     knownFriendGidSyncCooldownSec: DEFAULT_KNOWN_FRIEND_GID_SYNC_COOLDOWN_SEC,
     friendsListCacheTtlSec: DEFAULT_FRIENDS_LIST_CACHE_TTL_SEC,
     friendBlacklist: [],
+    ranchFriendBlacklist: [],
     plantBlacklist: [
         20002,
         20003,
@@ -301,7 +302,7 @@ function normalizeIntervals(intervals: Partial<IntervalConfig> | undefined): Int
 
 function cloneAccountConfig(base: Partial<AccountConfig> = DEFAULT_ACCOUNT_CONFIG): AccountConfig {
     const srcAutomation = (base && base.automation && typeof base.automation === 'object')
-        ? base.automation
+        ? migrateRanchMarketAutomation(base.automation)
         : {} as Partial<AutomationConfig>;
     const automation: AutomationConfig = { ...DEFAULT_ACCOUNT_CONFIG.automation };
     for (const key of Object.keys(automation) as Array<keyof AutomationConfig>) {
@@ -317,6 +318,7 @@ function cloneAccountConfig(base: Partial<AccountConfig> = DEFAULT_ACCOUNT_CONFI
     }
 
     const rawBlacklist: number[] = Array.isArray(base.friendBlacklist) ? base.friendBlacklist : [];
+    const rawRanchFriendBlacklist: number[] = Array.isArray(base.ranchFriendBlacklist) ? base.ranchFriendBlacklist : [];
 
     const knownFriendGids = normalizeKnownFriendGids(base.knownFriendGids);
     const knownFriendGidSyncCooldownSec = normalizeKnownFriendGidSyncCooldownSec(base.knownFriendGidSyncCooldownSec);
@@ -334,6 +336,7 @@ function cloneAccountConfig(base: Partial<AccountConfig> = DEFAULT_ACCOUNT_CONFI
         knownFriendGidSyncCooldownSec,
         friendsListCacheTtlSec,
         friendBlacklist: rawBlacklist.map(Number).filter(n => Number.isFinite(n) && n > 0),
+        ranchFriendBlacklist: rawRanchFriendBlacklist.map(Number).filter(n => Number.isFinite(n) && n > 0),
         plantingStrategy: ALLOWED_PLANTING_STRATEGIES.includes(String(base.plantingStrategy || '') as PlantingStrategy)
             ? String(base.plantingStrategy) as PlantingStrategy
             : DEFAULT_ACCOUNT_CONFIG.plantingStrategy,
@@ -373,7 +376,7 @@ function normalizeAccountConfig(input: unknown, fallback: AccountConfig = accoun
     const cfg = cloneAccountConfig(fallback || DEFAULT_ACCOUNT_CONFIG);
 
     if (src.automation && typeof src.automation === 'object') {
-        for (const [k, v] of Object.entries(src.automation)) {
+        for (const [k, v] of Object.entries(migrateRanchMarketAutomation(src.automation))) {
             if (!ALLOWED_AUTOMATION_KEYS.has(k)) continue;
             if (k === 'fertilizer') {
                 cfg.automation.fertilizer = normalizeFertilizerMode(v, cfg.automation.fertilizer);
@@ -421,6 +424,10 @@ function normalizeAccountConfig(input: unknown, fallback: AccountConfig = accoun
 
     if (Array.isArray(src.friendBlacklist)) {
         cfg.friendBlacklist = src.friendBlacklist.map(Number).filter((n: number) => Number.isFinite(n) && n > 0);
+    }
+
+    if (Array.isArray(src.ranchFriendBlacklist)) {
+        cfg.ranchFriendBlacklist = src.ranchFriendBlacklist.map(Number).filter((n: number) => Number.isFinite(n) && n > 0);
     }
 
     if (src.knownFriendGids !== undefined) {
