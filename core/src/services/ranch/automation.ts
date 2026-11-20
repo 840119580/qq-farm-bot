@@ -420,6 +420,8 @@ async function run(options: { farmDeadline?: () => number; canContinue?: () => b
                                     ownRecheckUsed = false;
                                     log('牧场', `${nickname || friend.name}：${outcome.notice}`, {
                                         module: 'ranch', event: `ranch_${outcome.action}`, result: confirmed ? 'ok' : 'skipped',
+                                        friendGid: Number(friend.gid) || 0,
+                                        friendName: String(nickname || friend.name || ''),
                                     });
                                 }, pendingFriend.progress);
                                 Object.assign(times, result.times);

@@ -1,4 +1,4 @@
-import type { GlobalConfig, LoginSettings, OfflineReminder, SystemConfig, UIConfig } from '../../types/config';
+import type { GlobalConfig, LoginSettings, OfflineReminder, QqBotPushConfig, SystemConfig, UIConfig } from '../../types/config';
 export {};
 
 const { DEFAULT_CLIENT_VERSION, DEFAULT_WX_CLIENT_VERSION, DEFAULT_TIME_ZONE, normalizeTimeZone, resolveClientVersionUpdatedAt } = require('../../config/config');
@@ -8,6 +8,7 @@ const sharedState = require('./shared-state');
 const {
     PUSHOO_CHANNELS,
     DEFAULT_OFFLINE_REMINDER,
+    DEFAULT_QQ_BOT_PUSH,
     DEFAULT_LOGIN_SETTINGS,
     globalConfig,
     normalizeAccountConfig,
@@ -57,6 +58,44 @@ function normalizeOfflineReminder(input: unknown): OfflineReminder {
     };
 }
 
+const QQ_BOT_EVENT_KEYS = new Set([
+    'sell_success', 'sell_done', '出售成功',
+    '照顾好友', 'friend_care',
+    '领取任务', '扫描任务', 'farm_task',
+    'ranch_task_claim', 'ranch_task_report', '牧场任务',
+    'ranch_steal', '偷取牧场',
+    '收获作物', 'harvest_crop', '施肥后收获作物',
+    '神秘商人自动购买', 'mystery_shop_purchase',
+]);
+
+function normalizeQqBotPush(input: unknown): QqBotPushConfig {
+    const src: Record<string, any> = (input && typeof input === 'object') ? input as Record<string, any> : {};
+    const windowSec = Number.parseInt(src.batchWindowSec, 10);
+    const daily = Number.parseInt(src.dailyLimit, 10);
+    const minute = Number.parseInt(src.minuteLimit, 10);
+    const rawKeys = Array.isArray(src.eventKeys) ? src.eventKeys : DEFAULT_QQ_BOT_PUSH.eventKeys;
+    const eventKeys = rawKeys.map((k: any) => String(k)).filter((k: string) => QQ_BOT_EVENT_KEYS.has(k));
+    return {
+        enabled: typeof src.enabled === 'boolean' ? src.enabled : DEFAULT_QQ_BOT_PUSH.enabled,
+        appId: (src.appId !== undefined && src.appId !== null) ? String(src.appId).trim() : DEFAULT_QQ_BOT_PUSH.appId,
+        appSecret: (src.appSecret !== undefined && src.appSecret !== null) ? String(src.appSecret).trim() : DEFAULT_QQ_BOT_PUSH.appSecret,
+        openid: (src.openid !== undefined && src.openid !== null) ? String(src.openid).trim() : DEFAULT_QQ_BOT_PUSH.openid,
+        eventKeys: eventKeys.length ? Array.from(new Set(eventKeys)) : [...DEFAULT_QQ_BOT_PUSH.eventKeys],
+        batchWindowSec: Number.isFinite(windowSec) && windowSec >= 5 && windowSec <= 600 ? windowSec : DEFAULT_QQ_BOT_PUSH.batchWindowSec,
+        dailyLimit: Number.isFinite(daily) && daily >= 1 && daily <= 1000 ? daily : DEFAULT_QQ_BOT_PUSH.dailyLimit,
+        minuteLimit: Number.isFinite(minute) && minute >= 1 && minute <= 20 ? minute : DEFAULT_QQ_BOT_PUSH.minuteLimit,
+        includeIcons: typeof src.includeIcons === 'boolean' ? src.includeIcons : DEFAULT_QQ_BOT_PUSH.includeIcons,
+        includeAvatars: typeof src.includeAvatars === 'boolean' ? src.includeAvatars : DEFAULT_QQ_BOT_PUSH.includeAvatars,
+        showAccount: typeof src.showAccount === 'boolean' ? src.showAccount : DEFAULT_QQ_BOT_PUSH.showAccount,
+        offlineNotify: typeof src.offlineNotify === 'boolean' ? src.offlineNotify : DEFAULT_QQ_BOT_PUSH.offlineNotify,
+        reloginEnabled: typeof src.reloginEnabled === 'boolean' ? src.reloginEnabled : DEFAULT_QQ_BOT_PUSH.reloginEnabled,
+        accountRoutes: (src.accountRoutes && typeof src.accountRoutes === 'object' && !Array.isArray(src.accountRoutes))
+            ? Object.fromEntries(Object.entries(src.accountRoutes).map(([k, v]) => [String(k), Array.isArray(v) ? v.map((x: any) => String(x)) : []]))
+            : {},
+        discoveredUsers: Array.isArray(src.discoveredUsers) ? src.discoveredUsers : undefined,
+    };
+}
+
 function saveGlobalConfig(changes: Partial<GlobalConfig> = {}): void {
     const next = { ...globalConfig, ...changes };
     const fallback = normalizeAccountConfig(next.defaultAccountConfig, DEFAULT_ACCOUNT_CONFIG);
@@ -81,6 +120,16 @@ function setUITheme(theme: unknown): UIConfig {
 
 function getOfflineReminder(): OfflineReminder {
     return normalizeOfflineReminder(globalConfig.offlineReminder);
+}
+
+function getQqBotPush(): QqBotPushConfig {
+    return normalizeQqBotPush(globalConfig.qqBotPush);
+}
+
+function setQqBotPush(cfg: Partial<QqBotPushConfig> | undefined): QqBotPushConfig {
+    const next = normalizeQqBotPush({ ...getQqBotPush(), ...(cfg || {}) });
+    saveGlobalConfig({ qqBotPush: next });
+    return getQqBotPush();
 }
 
 function normalizeLoginSettings(input: unknown): LoginSettings {
@@ -182,6 +231,7 @@ const { loadGlobalConfig } = sharedState;
 loadGlobalConfig();
 // Apply offlineReminder normalization after load
 globalConfig.offlineReminder = normalizeOfflineReminder(globalConfig.offlineReminder);
+globalConfig.qqBotPush = normalizeQqBotPush(globalConfig.qqBotPush);
 globalConfig.loginSettings = normalizeLoginSettings(globalConfig.loginSettings);
 if (sharedState.systemConfigMigrated && !process.env.FARM_ACCOUNT_ID) {
     saveGlobalConfig();
@@ -196,6 +246,8 @@ module.exports = {
     setLoginSettings,
     getOfflineReminder,
     setOfflineReminder,
+    getQqBotPush,
+    setQqBotPush,
     getSystemConfig,
     setSystemConfig,
 };

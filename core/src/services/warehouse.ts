@@ -769,6 +769,8 @@ async function sellAllFruits(): Promise<void> {
             result: totalGoldEarned > 0 ? 'ok' : 'unknown_gain',
             count: toSell.length,
             gold: totalGoldEarned,
+            itemId: toSell.length > 0 ? toNum(toSell[0].id) : 0,
+            itemName: toSell.length > 0 ? getFruitName(toNum(toSell[0].id)) : '',
             totalsBefore,
             totalsAfter,
             totalsDeltaGold,

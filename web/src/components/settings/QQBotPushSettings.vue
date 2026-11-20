@@ -1,0 +1,381 @@
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import BaseButton from '@/components/ui/BaseButton.vue'
+import BaseInput from '@/components/ui/BaseInput.vue'
+import BaseSwitch from '@/components/ui/BaseSwitch.vue'
+import { getApiErrorMessage } from '@/api'
+import { useAccountStore, type Account } from '@/stores/account'
+import {
+  QQ_BOT_EVENT_OPTIONS,
+  useQqBotPushStore,
+  type QqBotPushConfig,
+} from '@/stores/qqBotPush'
+import { useToastStore } from '@/stores/toast'
+
+const store = useQqBotPushStore()
+const accountStore = useAccountStore()
+const toast = useToastStore()
+
+const local = ref<QqBotPushConfig>({ ...store.config, eventKeys: [...store.config.eventKeys] })
+const saving = ref(false)
+const testing = ref(false)
+const capturing = ref(false)
+const dirty = ref(false)   // 用户正在编辑，避免轮询 fetch 覆盖本地输入
+let syncing = false        // 同步标志，避免同步动作触发 dirty
+
+function syncLocalFromStore() {
+  syncing = true
+  local.value = { ...store.config, eventKeys: [...store.config.eventKeys] }
+  // 保持当前选中用户；若尚未选中或已失效，默认选中默认接收用户
+  const currentUsers: string[] = (store.status.users || []).map((u: any) => u.openid)
+  if (!selectedUserOpenid.value || (currentUsers.length && !currentUsers.includes(selectedUserOpenid.value))) {
+    selectedUserOpenid.value = local.value.openid && currentUsers.includes(local.value.openid)
+      ? local.value.openid
+      : (currentUsers[0] || '')
+  }
+  dirty.value = false
+  Promise.resolve().then(() => { syncing = false })
+}
+
+const statusText = computed(() => {
+  const s = store.status
+  if (s.connected) return '网关已连接'
+  if (s.connecting) return '正在连接...'
+  if (s.openid) return '已绑定用户，网关离线'
+  return '未连接'
+})
+
+const statusClass = computed(() => {
+  const s = store.status
+  if (s.connected) return 'text-green-600 dark:text-green-400'
+  if (s.connecting) return 'text-amber-600 dark:text-amber-400'
+  return 'text-gray-500 dark:text-gray-400'
+})
+
+const users = computed(() => store.status.users || [])
+const accounts = computed<Account[]>(() => accountStore.accounts || [])
+const selectedUserOpenid = ref('')
+const selectedUser = computed(() => users.value.find(u => u.openid === selectedUserOpenid.value) || null)
+
+function shortOpenid(openid: string) {
+  if (!openid) return ''
+  return openid.length > 12 ? `${openid.slice(0, 6)}...${openid.slice(-4)}` : openid
+}
+
+function toggleEvent(key: string, checked: boolean) {
+  const keys = new Set(local.value.eventKeys)
+  if (checked) keys.add(key)
+  else keys.delete(key)
+  local.value.eventKeys = QQ_BOT_EVENT_OPTIONS.filter(o => keys.has(o.key)).map(o => o.key)
+}
+
+onMounted(async () => {
+  // 必须等 fetch 完成后再用 store.config 初始化 local，
+  // 否则会用默认空值覆盖后端已保存的 AppSecret/openid。
+  await Promise.all([store.fetch().catch(() => {}), accountStore.fetchAccounts().catch(() => {})])
+  syncLocalFromStore()
+  store.startPolling()
+})
+
+// 轮询/捕获/切换用户后，若用户没在编辑则同步最新配置到表单
+watch(() => store.config, () => {
+  if (!dirty.value) syncLocalFromStore()
+}, { deep: true })
+
+// 用户一改动表单就置 dirty，避免后台轮询覆盖未保存的输入
+watch(local, () => { if (!syncing) dirty.value = true }, { deep: true })
+
+onUnmounted(() => {
+  store.stopPolling()
+})
+
+async function handleSave() {
+  saving.value = true
+  try {
+    const res = await store.save(local.value) as any
+    if (res?.ok) {
+      dirty.value = false
+      toast.success('QQ 机器人推送设置已保存')
+    }
+    else toast.error(getApiErrorMessage(res, '保存失败'))
+  }
+  catch (error) {
+    toast.error(getApiErrorMessage(error, '保存失败'))
+  }
+  finally {
+    saving.value = false
+  }
+}
+
+async function handleTest() {
+  testing.value = true
+  try {
+    const res = await store.testSend() as any
+    if (res?.ok) toast.success('测试消息已发送到 QQ')
+    else toast.error(getApiErrorMessage(res, '测试发送失败'))
+  }
+  catch (error) {
+    toast.error(getApiErrorMessage(error, '测试发送失败'))
+  }
+  finally {
+    testing.value = false
+  }
+}
+
+async function handleCapture() {
+  capturing.value = true
+  try {
+    const res = await store.capture() as any
+    if (res?.ok) toast.success('已开始监听，请用 QQ 给机器人发一条消息')
+    else toast.error(getApiErrorMessage(res, '启动捕获失败'))
+    await store.fetch()
+    syncLocalFromStore()
+  }
+  catch (error) {
+    toast.error(getApiErrorMessage(error, '启动捕获失败'))
+  }
+  finally {
+    capturing.value = false
+  }
+}
+
+async function handleSelectUser(openid: string) {
+  try {
+    const res = await store.selectUser(openid) as any
+    if (res?.ok) {
+      await store.fetch()
+      syncLocalFromStore()
+      toast.success('已切换接收用户')
+    }
+    else toast.error(getApiErrorMessage(res, '切换用户失败'))
+  }
+  catch (error) {
+    toast.error(getApiErrorMessage(error, '切换用户失败'))
+  }
+}
+
+function isCurrentUser(openid: string) {
+  return !!local.value.openid && local.value.openid === openid
+}
+
+// 账号路由：某账号是否推送给指定用户
+function accountHasUser(accountId: string, openid: string): boolean {
+  const routes = local.value.accountRoutes || {}
+  const list = routes[accountId]
+  if (Array.isArray(list)) return list.includes(openid)
+  // 未配置时继承默认 openid
+  return !!local.value.openid && local.value.openid === openid
+}
+
+function toggleAccountUser(accountId: string, openid: string, checked: boolean) {
+  const routes = { ...(local.value.accountRoutes || {}) }
+  // 首次修改某账号时，把它当前的接收用户（默认或已配置）作为初值
+  let list: string[]
+  if (Array.isArray(routes[accountId])) {
+    list = [...routes[accountId]]
+  } else {
+    list = local.value.openid ? [local.value.openid] : []
+  }
+  if (checked && !list.includes(openid)) list.push(openid)
+  if (!checked) list = list.filter(o => o !== openid)
+  routes[accountId] = list
+  local.value.accountRoutes = routes
+  dirty.value = true
+}
+</script>
+
+<template>
+  <div class="space-y-3">
+    <section class="farm-card rounded-lg p-3">
+      <div class="mb-3 flex items-start gap-2.5">
+        <div class="h-9 w-9 flex shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-900/25 dark:text-blue-400">
+          <span class="i-carbon-chat text-xl" />
+        </div>
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center justify-between gap-2">
+            <h4 class="text-base text-gray-900 font-bold dark:text-gray-100">
+              QQ 机器人推送
+            </h4>
+            <BaseSwitch v-model="local.enabled" />
+          </div>
+          <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+            将重要日志以单聊消息推送到 QQ，多条自动聚合以规避频率限制
+          </p>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <div class="min-w-0 flex flex-col gap-1.5">
+          <span class="text-sm text-gray-700 font-medium dark:text-gray-300">AppID</span>
+          <BaseInput v-model="local.appId" placeholder="机器人 AppID" />
+        </div>
+        <div class="min-w-0 flex flex-col gap-1.5">
+          <span class="text-sm text-gray-700 font-medium dark:text-gray-300">AppSecret</span>
+          <BaseInput v-model="local.appSecret" type="password" placeholder="在开放平台管理端复制" />
+        </div>
+        <div class="min-w-0 flex flex-col gap-1.5 sm:col-span-2">
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-sm text-gray-700 font-medium dark:text-gray-300">接收用户 openid</span>
+            <BaseButton variant="text" size="sm" :loading="capturing" @click="handleCapture">
+              从消息捕获
+            </BaseButton>
+          </div>
+          <BaseInput v-model="local.openid" placeholder="点击右侧按钮后用 QQ 给机器人发一条消息，或手动填写" />
+          <div class="flex items-center gap-1.5 text-xs">
+            <span class="h-1.5 w-1.5 rounded-full" :class="store.status.connected ? 'bg-green-500' : 'bg-gray-400'" />
+            <span :class="statusClass">{{ statusText }}</span>
+            <span v-if="store.status.lastError" class="text-red-500 dark:text-red-400 truncate">· {{ store.status.lastError }}</span>
+          </div>
+        </div>
+        <div class="min-w-0 flex flex-col gap-1.5">
+          <span class="text-sm text-gray-700 font-medium dark:text-gray-300">聚合窗口（秒）</span>
+          <BaseInput v-model.number="local.batchWindowSec" type="number" :min="5" :max="600" />
+          <span class="text-xs text-gray-400">窗口内的日志合并为一条消息，默认 60 秒</span>
+        </div>
+        <div class="min-w-0 flex flex-col gap-1.5">
+          <span class="text-sm text-gray-700 font-medium dark:text-gray-300">每日上限 / 每分钟上限</span>
+          <div class="flex gap-2">
+            <BaseInput v-model.number="local.dailyLimit" type="number" :min="1" :max="1000" />
+            <BaseInput v-model.number="local.minuteLimit" type="number" :min="1" :max="20" />
+          </div>
+          <span class="text-xs text-gray-400">官方限制：每好友 20 条/分钟、1000 条/天，留有余量</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="farm-card rounded-lg p-3">
+      <div class="mb-2 flex items-center justify-between gap-2">
+        <div>
+          <h4 class="text-base text-gray-900 font-bold dark:text-gray-100">
+            接收用户
+          </h4>
+          <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+            点选一个用户，在下方设置哪些农场账号推送给它
+          </p>
+        </div>
+        <BaseButton variant="text" size="sm" :loading="capturing" @click="handleCapture">
+          捕获新用户
+        </BaseButton>
+      </div>
+      <div v-if="users.length" class="flex flex-wrap gap-2">
+        <button
+          v-for="u in users"
+          :key="u.openid"
+          type="button"
+          class="flex items-center gap-2 rounded-full border py-1 pl-1 pr-3 text-left transition-colors"
+          :class="selectedUserOpenid === u.openid
+            ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/25'
+            : 'border-gray-200 hover:border-gray-300 dark:border-gray-700 dark:hover:border-gray-600'"
+          @click="selectedUserOpenid = u.openid"
+        >
+          <img
+            v-if="u.avatar"
+            :src="u.avatar"
+            alt=""
+            class="h-7 w-7 shrink-0 rounded-full object-cover"
+          >
+          <span v-else class="h-7 w-7 flex shrink-0 items-center justify-center rounded-full bg-gray-200 text-gray-500 dark:bg-gray-700">
+            <span class="i-carbon-user-avatar text-base" />
+          </span>
+          <span class="max-w-28 truncate text-sm text-gray-800 dark:text-gray-200">{{ u.nickname || shortOpenid(u.openid) }}</span>
+          <span
+            v-if="isCurrentUser(u.openid)"
+            class="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] text-blue-600 dark:bg-blue-900/40 dark:text-blue-300"
+          >默认</span>
+        </button>
+      </div>
+      <div v-else class="rounded-lg border border-dashed border-gray-300 px-3 py-5 text-center text-sm text-gray-400 dark:border-gray-700">
+        暂无用户。点击「捕获新用户」，再用 QQ 给机器人发一条消息。
+      </div>
+
+      <!-- 当前选中用户的推送目标：只列出该用户的账号开关 -->
+      <div v-if="selectedUser" class="mt-3 border-t border-gray-200 pt-3 dark:border-gray-700">
+        <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <span>推送账号</span>
+            <span class="text-gray-400">· {{ selectedUser.nickname || shortOpenid(selectedUser.openid) }}</span>
+          </div>
+          <BaseButton
+            v-if="!isCurrentUser(selectedUser.openid)"
+            variant="text"
+            size="sm"
+            @click="handleSelectUser(selectedUser.openid)"
+          >
+            设为默认
+          </BaseButton>
+        </div>
+        <div v-if="accounts.length" class="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+          <div
+            v-for="acc in accounts"
+            :key="acc.id"
+            class="rounded-lg border border-gray-200 px-3 py-1 dark:border-gray-700"
+          >
+            <BaseSwitch
+              :model-value="accountHasUser(acc.id, selectedUser.openid)"
+              :label="acc.name || acc.id"
+              @update:model-value="toggleAccountUser(acc.id, selectedUser.openid, !!$event)"
+            />
+          </div>
+        </div>
+        <div v-else class="text-xs text-gray-400">暂无农场账号，请先在「账号管理」添加账号。</div>
+        <p class="mt-2 text-xs text-gray-400">
+          开启表示该账号的日志推送给此用户。未给任何用户单独开启的账号，将推送给「默认」用户。
+        </p>
+      </div>
+    </section>
+
+    <!-- 推送事件 + 通知与显示：左右栏 -->
+    <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+      <section class="farm-card rounded-lg p-3">
+        <h4 class="mb-2 text-base text-gray-900 font-bold dark:text-gray-100">
+          推送事件
+        </h4>
+        <div class="grid grid-cols-2 gap-1.5">
+          <div
+            v-for="opt in QQ_BOT_EVENT_OPTIONS"
+            :key="opt.key"
+            class="rounded-lg border border-gray-200 px-3 py-1 dark:border-gray-700"
+          >
+            <BaseSwitch
+              :model-value="local.eventKeys.includes(opt.key)"
+              :label="opt.label"
+              @update:model-value="toggleEvent(opt.key, !!$event)"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section class="farm-card rounded-lg p-3">
+        <h4 class="mb-2 text-base text-gray-900 font-bold dark:text-gray-100">
+          通知与显示
+        </h4>
+        <div class="grid grid-cols-2 gap-1.5">
+          <BaseSwitch v-model="local.offlineNotify" label="账号下线时推送" />
+          <BaseSwitch v-model="local.reloginEnabled" label="下线消息带登录按钮" />
+          <BaseSwitch v-model="local.includeIcons" label="显示事件/物品图标" />
+          <BaseSwitch v-model="local.includeAvatars" label="显示好友头像" />
+          <BaseSwitch v-model="local.showAccount" label="显示账号名" />
+        </div>
+        <div v-if="store.status.relogin?.active" class="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/25 dark:text-amber-300">
+          正在等待扫码登录（账号 {{ store.status.relogin.accountId }}，阶段：{{ store.status.relogin.stage }}）
+        </div>
+        <div class="mt-3 text-xs text-gray-400">
+          今日已发送 {{ store.status.sentToday }} · 待发送 {{ store.status.queued }} · 素材 {{ store.status.mediaCount }}
+        </div>
+      </section>
+    </div>
+
+    <div class="flex flex-wrap gap-2">
+      <BaseButton variant="text" size="sm" :loading="testing" :disabled="!local.enabled" @click="handleTest">
+        发送测试消息
+      </BaseButton>
+      <BaseButton variant="primary" size="sm" :loading="saving" @click="handleSave">
+        保存 QQ 机器人设置
+      </BaseButton>
+    </div>
+
+    <p class="text-xs leading-relaxed text-gray-400">
+      使用提示：在 QQ 开放平台将事件订阅方式设为 WebSocket，并把你的 QQ 加入内部体验号码；如需「重新登录按钮」，需为机器人开通自定义按钮（内邀）能力并订阅 INTERACTION 事件。保存设置后点击「从消息捕获」，再用 QQ 给机器人发任意一条消息即可绑定。用户需在机器人资料卡打开「允许主动消息」。
+    </p>
+  </div>
+</template>
