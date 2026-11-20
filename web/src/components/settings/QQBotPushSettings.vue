@@ -3,8 +3,9 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSwitch from '@/components/ui/BaseSwitch.vue'
+import ConfirmModal from '@/components/ConfirmModal.vue'
 import { getApiErrorMessage } from '@/api'
-import { useAccountStore, type Account } from '@/stores/account'
+import { getPlatformClass, getPlatformLabel, useAccountStore, type Account } from '@/stores/account'
 import {
   QQ_BOT_EVENT_OPTIONS,
   useQqBotPushStore,
@@ -22,6 +23,12 @@ const testing = ref(false)
 const capturing = ref(false)
 const dirty = ref(false)   // 用户正在编辑，避免轮询 fetch 覆盖本地输入
 let syncing = false        // 同步标志，避免同步动作触发 dirty
+// 删除接收用户确认
+const showDeleteConfirm = ref(false)
+const userToDelete = ref<string>('')
+const deletingUser = ref(false)
+// 账号头像加载失败记录
+const accountAvatarErrors = ref<Set<string>>(new Set())
 
 function syncLocalFromStore() {
   syncing = true
@@ -56,6 +63,10 @@ const users = computed(() => store.status.users || [])
 const accounts = computed<Account[]>(() => accountStore.accounts || [])
 const selectedUserOpenid = ref('')
 const selectedUser = computed(() => users.value.find(u => u.openid === selectedUserOpenid.value) || null)
+// 有接收用户时，openid 输入框只读并展示当前选中用户；无用户时可手动填
+const openidDisplay = computed(() => (users.value.length && selectedUser.value)
+  ? selectedUser.value.openid
+  : local.value.openid)
 
 function shortOpenid(openid: string) {
   if (!openid) return ''
@@ -158,6 +169,44 @@ function isCurrentUser(openid: string) {
   return !!local.value.openid && local.value.openid === openid
 }
 
+function accountAvatar(acc: Account): string {
+  return String(acc.avatar || '').trim()
+}
+function canShowAccountAvatar(acc: Account): boolean {
+  return !!accountAvatar(acc) && !accountAvatarErrors.value.has(String(acc.id))
+}
+function onAccountAvatarError(acc: Account) {
+  accountAvatarErrors.value.add(String(acc.id))
+}
+
+// 删除接收用户
+function askDeleteUser(openid: string) {
+  userToDelete.value = openid
+  showDeleteConfirm.value = true
+}
+async function confirmDeleteUser() {
+  if (!userToDelete.value || deletingUser.value) return
+  deletingUser.value = true
+  try {
+    const res = await store.deleteUser(userToDelete.value) as any
+    if (res?.ok) {
+      toast.success('接收用户已删除')
+      await store.fetch()
+      // 若删除的是当前选中用户，先置空让 syncLocalFromStore 自动选一个新的
+      if (selectedUserOpenid.value === userToDelete.value) selectedUserOpenid.value = ''
+      syncLocalFromStore()
+      showDeleteConfirm.value = false
+    }
+    else toast.error(getApiErrorMessage(res, '删除失败'))
+  }
+  catch (error) {
+    toast.error(getApiErrorMessage(error, '删除失败'))
+  }
+  finally {
+    deletingUser.value = false
+  }
+}
+
 // 账号路由：某账号是否推送给指定用户
 function accountHasUser(accountId: string, openid: string): boolean {
   const routes = local.value.accountRoutes || {}
@@ -186,7 +235,8 @@ function toggleAccountUser(accountId: string, openid: string, checked: boolean) 
 
 <template>
   <div class="space-y-3">
-    <section class="farm-card rounded-lg p-3">
+    <div class="grid grid-cols-1 gap-3 lg:grid-cols-4">
+      <section class="farm-card rounded-lg p-3 lg:col-span-3">
       <div class="mb-3 flex items-start gap-2.5">
         <div class="h-9 w-9 flex shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-900/25 dark:text-blue-400">
           <span class="i-carbon-chat text-xl" />
@@ -215,17 +265,26 @@ function toggleAccountUser(accountId: string, openid: string, checked: boolean) 
         </div>
         <div class="min-w-0 flex flex-col gap-1.5 sm:col-span-2">
           <div class="flex items-center justify-between gap-2">
-            <span class="text-sm text-gray-700 font-medium dark:text-gray-300">接收用户 openid</span>
-            <BaseButton variant="text" size="sm" :loading="capturing" @click="handleCapture">
+            <span class="text-sm text-gray-700 font-medium dark:text-gray-300">
+              接收用户 openid
+              <span v-if="users.length" class="ml-1 text-xs text-gray-400">（当前选中）</span>
+            </span>
+            <BaseButton
+              variant="primary"
+              size="sm"
+              :loading="capturing"
+              :disabled="users.length > 0"
+              :title="users.length > 0 ? '已有接收用户，请在下方「接收用户」卡片中添加' : ''"
+              @click="handleCapture"
+            >
               从消息捕获
             </BaseButton>
           </div>
-          <BaseInput v-model="local.openid" placeholder="点击右侧按钮后用 QQ 给机器人发一条消息，或手动填写" />
-          <div class="flex items-center gap-1.5 text-xs">
-            <span class="h-1.5 w-1.5 rounded-full" :class="store.status.connected ? 'bg-green-500' : 'bg-gray-400'" />
-            <span :class="statusClass">{{ statusText }}</span>
-            <span v-if="store.status.lastError" class="text-red-500 dark:text-red-400 truncate">· {{ store.status.lastError }}</span>
-          </div>
+          <BaseInput
+            :model-value="openidDisplay"
+            :disabled="users.length > 0"
+            :placeholder="users.length > 0 ? '' : '点击右侧按钮后用 QQ 给机器人发一条消息，或手动填写'"
+          />
         </div>
         <div class="min-w-0 flex flex-col gap-1.5">
           <span class="text-sm text-gray-700 font-medium dark:text-gray-300">聚合窗口（秒）</span>
@@ -241,7 +300,58 @@ function toggleAccountUser(accountId: string, openid: string, checked: boolean) 
           <span class="text-xs text-gray-400">官方限制：每好友 20 条/分钟、1000 条/天，留有余量</span>
         </div>
       </div>
-    </section>
+      </section>
+
+      <!-- 推送统计 + 连接状态：上下 2:1 -->
+      <div class="flex h-full flex-col gap-3">
+        <section class="farm-card flex-[2] rounded-2xl bg-white p-4 shadow-md dark:bg-gray-800">
+          <h4 class="mb-3 flex items-center gap-2 text-base font-display font-medium">
+            <span class="i-carbon-chart-column" />
+            <span>推送统计</span>
+          </h4>
+          <div class="grid grid-cols-2 gap-2">
+            <div class="flex items-center justify-between rounded-xl bg-gray-50 px-3 py-2 transition-transform hover:scale-105 dark:bg-gray-700/30">
+              <div class="flex items-center gap-2">
+                <span class="i-carbon-send select-none text-base text-blue-500" />
+                <span class="text-xs text-gray-500 dark:text-gray-400 2xl:text-sm">本次已发送</span>
+              </div>
+              <div class="text-sm font-bold 2xl:text-base">{{ store.status.sentToday }}</div>
+            </div>
+            <div class="flex items-center justify-between rounded-xl bg-gray-50 px-3 py-2 transition-transform hover:scale-105 dark:bg-gray-700/30">
+              <div class="flex items-center gap-2">
+                <span class="i-carbon-time select-none text-base text-amber-500" />
+                <span class="text-xs text-gray-500 dark:text-gray-400 2xl:text-sm">待发送</span>
+              </div>
+              <div class="text-sm font-bold 2xl:text-base">{{ store.status.queued }}</div>
+            </div>
+            <div class="col-span-2 flex items-center justify-between rounded-xl bg-gray-50 px-3 py-2 transition-transform hover:scale-105 dark:bg-gray-700/30">
+              <div class="flex items-center gap-2">
+                <span class="i-carbon-image select-none text-base text-green-500" />
+                <span class="text-xs text-gray-500 dark:text-gray-400 2xl:text-sm">素材缓存</span>
+              </div>
+              <div class="text-sm font-bold 2xl:text-base">{{ store.status.mediaCount }}</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 网关连接状态（无标题） -->
+        <section class="farm-card flex-1 rounded-2xl bg-white p-4 shadow-md dark:bg-gray-800">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2 text-gray-700 dark:text-gray-300">
+              <span
+                class="i-carbon-wifi text-lg"
+                :class="store.status.connected ? 'text-green-500' : 'text-gray-400'"
+              />
+              <span>网关状态</span>
+            </div>
+            <span class="text-lg font-bold" :class="statusClass">{{ statusText }}</span>
+          </div>
+          <div v-if="store.status.lastError" class="mt-2 truncate text-xs text-red-500 dark:text-red-400" :title="store.status.lastError">
+            {{ store.status.lastError }}
+          </div>
+        </section>
+      </div>
+    </div>
 
     <section class="farm-card rounded-lg p-3">
       <div class="mb-2 flex items-center justify-between gap-2">
@@ -253,7 +363,7 @@ function toggleAccountUser(accountId: string, openid: string, checked: boolean) 
             点选一个用户，在下方设置哪些农场账号推送给它
           </p>
         </div>
-        <BaseButton variant="text" size="sm" :loading="capturing" @click="handleCapture">
+        <BaseButton variant="primary" size="sm" :loading="capturing" @click="handleCapture">
           捕获新用户
         </BaseButton>
       </div>
@@ -282,6 +392,13 @@ function toggleAccountUser(accountId: string, openid: string, checked: boolean) 
             v-if="isCurrentUser(u.openid)"
             class="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] text-blue-600 dark:bg-blue-900/40 dark:text-blue-300"
           >默认</span>
+          <span
+            role="button"
+            tabindex="0"
+            :title="`删除用户 ${u.nickname || shortOpenid(u.openid)}`"
+            class="i-carbon-trash-can text-sm text-gray-400 hover:text-red-500"
+            @click.stop="askDeleteUser(u.openid)"
+          />
         </button>
       </div>
       <div v-else class="rounded-lg border border-dashed border-gray-300 px-3 py-5 text-center text-sm text-gray-400 dark:border-gray-700">
@@ -308,11 +425,31 @@ function toggleAccountUser(accountId: string, openid: string, checked: boolean) 
           <div
             v-for="acc in accounts"
             :key="acc.id"
-            class="rounded-lg border border-gray-200 px-3 py-1 dark:border-gray-700"
+            class="flex items-center gap-2 rounded-lg border border-gray-200 px-2.5 py-1.5 dark:border-gray-700"
           >
+            <img
+              v-if="canShowAccountAvatar(acc)"
+              :src="accountAvatar(acc)"
+              :alt="acc.name || acc.id"
+              class="h-7 w-7 shrink-0 rounded-full object-cover"
+              @error="onAccountAvatarError(acc)"
+            >
+            <span v-else class="h-7 w-7 flex shrink-0 items-center justify-center rounded-full bg-gray-100 text-gray-400 dark:bg-gray-700">
+              <span class="i-carbon-user text-base" />
+            </span>
+            <div class="min-w-0 flex-1">
+              <div class="truncate text-sm text-gray-800 dark:text-gray-200">{{ acc.name || acc.nick || acc.id }}</div>
+              <div class="flex items-center gap-1.5">
+                <span
+                  v-if="acc.platform"
+                  class="rounded px-1 py-0.5 text-[10px] leading-tight font-medium"
+                  :class="getPlatformClass(acc.platform)"
+                >{{ getPlatformLabel(acc.platform) }}</span>
+                <span class="truncate text-xs text-gray-400">{{ acc.uin || acc.id }}</span>
+              </div>
+            </div>
             <BaseSwitch
               :model-value="accountHasUser(acc.id, selectedUser.openid)"
-              :label="acc.name || acc.id"
               @update:model-value="toggleAccountUser(acc.id, selectedUser.openid, !!$event)"
             />
           </div>
@@ -341,6 +478,7 @@ function toggleAccountUser(accountId: string, openid: string, checked: boolean) 
               :label="opt.label"
               @update:model-value="toggleEvent(opt.key, !!$event)"
             />
+            <p class="mt-0.5 pl-0.5 text-xs text-gray-400">{{ opt.desc }}</p>
           </div>
         </div>
       </section>
@@ -350,24 +488,31 @@ function toggleAccountUser(accountId: string, openid: string, checked: boolean) 
           通知与显示
         </h4>
         <div class="grid grid-cols-2 gap-1.5">
-          <BaseSwitch v-model="local.offlineNotify" label="账号下线时推送" />
-          <BaseSwitch v-model="local.reloginEnabled" label="下线消息带登录按钮" />
-          <BaseSwitch v-model="local.includeIcons" label="显示事件/物品图标" />
-          <BaseSwitch v-model="local.includeAvatars" label="显示好友头像" />
-          <BaseSwitch v-model="local.showAccount" label="显示账号名" />
+          <div class="rounded-lg border border-gray-200 px-3 py-1 dark:border-gray-700">
+            <BaseSwitch v-model="local.offlineNotify" label="账号下线时推送" />
+          </div>
+          <div class="rounded-lg border border-gray-200 px-3 py-1 dark:border-gray-700">
+            <BaseSwitch v-model="local.reloginEnabled" label="下线消息带登录按钮" />
+          </div>
+          <div class="rounded-lg border border-gray-200 px-3 py-1 dark:border-gray-700">
+            <BaseSwitch v-model="local.includeIcons" label="显示事件/物品图标" />
+          </div>
+          <div class="rounded-lg border border-gray-200 px-3 py-1 dark:border-gray-700">
+            <BaseSwitch v-model="local.includeAvatars" label="显示好友头像" />
+          </div>
+          <div class="rounded-lg border border-gray-200 px-3 py-1 dark:border-gray-700">
+            <BaseSwitch v-model="local.showAccount" label="显示账号名" />
+          </div>
         </div>
         <div v-if="store.status.relogin?.active" class="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/25 dark:text-amber-300">
           正在等待扫码登录（账号 {{ store.status.relogin.accountId }}，阶段：{{ store.status.relogin.stage }}）
-        </div>
-        <div class="mt-3 text-xs text-gray-400">
-          今日已发送 {{ store.status.sentToday }} · 待发送 {{ store.status.queued }} · 素材 {{ store.status.mediaCount }}
         </div>
       </section>
     </div>
 
     <div class="flex flex-wrap gap-2">
-      <BaseButton variant="text" size="sm" :loading="testing" :disabled="!local.enabled" @click="handleTest">
-        发送测试消息
+      <BaseButton variant="secondary" size="sm" :loading="testing" :disabled="!local.enabled" @click="handleTest">
+        测试通知
       </BaseButton>
       <BaseButton variant="primary" size="sm" :loading="saving" @click="handleSave">
         保存 QQ 机器人设置
@@ -377,5 +522,17 @@ function toggleAccountUser(accountId: string, openid: string, checked: boolean) 
     <p class="text-xs leading-relaxed text-gray-400">
       使用提示：在 QQ 开放平台将事件订阅方式设为 WebSocket，并把你的 QQ 加入内部体验号码；如需「重新登录按钮」，需为机器人开通自定义按钮（内邀）能力并订阅 INTERACTION 事件。保存设置后点击「从消息捕获」，再用 QQ 给机器人发任意一条消息即可绑定。用户需在机器人资料卡打开「允许主动消息」。
     </p>
+
+    <ConfirmModal
+      :show="showDeleteConfirm"
+      :loading="deletingUser"
+      title="删除接收用户"
+      :message="`确定要移除接收用户 ${users.find(u => u.openid === userToDelete)?.nickname || shortOpenid(userToDelete)} 吗？该账号的推送目标配置会一并清理。`"
+      confirm-text="删除"
+      type="danger"
+      @close="!deletingUser && (showDeleteConfirm = false)"
+      @cancel="!deletingUser && (showDeleteConfirm = false)"
+      @confirm="confirmDeleteUser"
+    />
   </div>
 </template>

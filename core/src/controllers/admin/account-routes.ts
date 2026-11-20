@@ -419,6 +419,17 @@ function mountAccountRoutes(app: Application, ctx: AdminContext): void {
         }
     });
 
+    app.post('/api/settings/qq-bot-push/delete-user', async (req: Request, res: Response) => {
+        try {
+            const svc = require('../../services/qq-bot-push').getActiveQqBotPush();
+            if (!svc) return res.status(500).json({ ok: false, error: '推送服务未初始化' });
+            const result = svc.deleteUser(String((req.body || {}).openid || ''));
+            res.json({ ok: true, data: { ...result, config: svc.getConfig(), status: svc.getStatus() } });
+        } catch (e: any) {
+            return res.status(400).json({ ok: false, error: e?.message || '删除用户失败' });
+        }
+    });
+
     // API: 获取配置
     app.get('/api/settings', async (req: Request, res: Response) => {
         try {
