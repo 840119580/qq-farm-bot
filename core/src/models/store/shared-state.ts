@@ -1,4 +1,4 @@
-import type { AccountConfig, AutomationConfig, BagSeedFallbackStrategy, FertilizerLandType, GlobalConfig, IntervalConfig, LoginSettings, OfflineReminder, PlantingStrategy, QuietHoursConfig } from '../../types/config';
+import type { AccountConfig, AutomationConfig, BagSeedFallbackStrategy, FertilizerLandType, FertilizerMode, GlobalConfig, IntervalConfig, LoginSettings, OfflineReminder, PlantingStrategy, QuietHoursConfig } from '../../types/config';
 export {};
 
 const { DEFAULT_TIME_ZONE, normalizeTimeZone, resolveClientVersion } = require('../../config/config');
@@ -6,6 +6,7 @@ const { getDataFile, ensureDataDir } = require('../../config/runtime-paths');
 const { createConfigStorage } = require('./config-storage');
 const { storageError } = require('../../services/json-db');
 const { parseHourOfDay } = require('../../utils/hour-of-day');
+const { RANCH_AUTOMATION_DEFAULTS, normalizeRanchSetting } = require('../../config/ranch-automation');
 
 const STORE_FILE: string = getDataFile('store.json');
 const ACCOUNTS_FILE: string = getDataFile('accounts.json');
@@ -22,6 +23,7 @@ const PUSHOO_CHANNELS: Set<string> = new Set([
 ]);
 
 const DEFAULT_FERTILIZER_LAND_TYPES: FertilizerLandType[] = ['purple-gold', 'gold', 'black', 'red', 'normal'];
+const FERTILIZER_MODES = new Set<FertilizerMode>(['both', 'normal', 'organic', 'smart', 'none', 'normal_ripen', 'organic_ripen']);
 const ALL_FERTILIZER_LAND_TYPES: FertilizerLandType[] = ['blue-crystal', ...DEFAULT_FERTILIZER_LAND_TYPES];
 const FERTILIZER_LAND_TYPE_SET: Set<string> = new Set(ALL_FERTILIZER_LAND_TYPES);
 const INTERVAL_MAX_SEC: number = 86400;
@@ -49,6 +51,7 @@ const DEFAULT_LOGIN_SETTINGS: LoginSettings = {
 
 const DEFAULT_ACCOUNT_CONFIG: AccountConfig = {
     automation: {
+        ...RANCH_AUTOMATION_DEFAULTS,
         farm: true,
         farm_harvest_tiangong: true,
         farm_push: true,
@@ -72,7 +75,7 @@ const DEFAULT_ACCOUNT_CONFIG: AccountConfig = {
         mystery_shop_arrival_notify: false,
         mystery_shop_purchase_notify: false,
         sell: true,
-        fertilizer: 'smart',
+        fertilizer: 'none',
         fertilizer_multi_season: true,
         fertilizer_land_types: [...DEFAULT_FERTILIZER_LAND_TYPES],
         fertilizer_smart_seconds: 300,
@@ -289,6 +292,10 @@ function cloneAccountConfig(base: Partial<AccountConfig> = DEFAULT_ACCOUNT_CONFI
             automation[key] = normalizeFertilizerLandTypes(srcAutomation[key], DEFAULT_FERTILIZER_LAND_TYPES);
             continue;
         }
+        if (key === 'ranch_coop_cub_priority' || key === 'ranch_shed_cub_priority') {
+            automation[key] = [...(srcAutomation[key] ?? automation[key])];
+            continue;
+        }
         if (srcAutomation[key] !== undefined) (automation as any)[key] = (srcAutomation as any)[key];
     }
 
@@ -340,6 +347,10 @@ function cloneAccountConfig(base: Partial<AccountConfig> = DEFAULT_ACCOUNT_CONFI
     };
 }
 
+function normalizeFertilizerMode(value: unknown, fallback: FertilizerMode): FertilizerMode {
+    return FERTILIZER_MODES.has(value as FertilizerMode) ? value as FertilizerMode : fallback;
+}
+
 function normalizeAccountConfig(input: unknown, fallback: AccountConfig = accountFallbackConfig): AccountConfig {
     const src: Record<string, any> = (input && typeof input === 'object') ? input as Record<string, any> : {};
     const cfg = cloneAccountConfig(fallback || DEFAULT_ACCOUNT_CONFIG);
@@ -348,10 +359,11 @@ function normalizeAccountConfig(input: unknown, fallback: AccountConfig = accoun
         for (const [k, v] of Object.entries(src.automation)) {
             if (!ALLOWED_AUTOMATION_KEYS.has(k)) continue;
             if (k === 'fertilizer') {
-                const allowed = ['both', 'normal', 'organic', 'smart', 'none'];
-                (cfg.automation as any)[k] = allowed.includes(v as string) ? v : cfg.automation[k as keyof AutomationConfig];
+                cfg.automation.fertilizer = normalizeFertilizerMode(v, cfg.automation.fertilizer);
             } else if (k === 'fertilizer_land_types') {
                 cfg.automation.fertilizer_land_types = normalizeFertilizerLandTypes(v, cfg.automation.fertilizer_land_types);
+            } else if (k.startsWith('ranch_')) {
+                (cfg.automation as any)[k] = normalizeRanchSetting(k, v);
             } else if (k === 'fertilizer_smart_seconds') {
                 cfg.automation.fertilizer_smart_seconds = Math.max(30, Math.min(3600, Number(v) || 300));
             } else {
@@ -644,6 +656,7 @@ module.exports = {
     normalizeBagSeedPriority,
     normalizeBagSeedLandTypes,
     normalizeBagSeedFallbackStrategy,
+    normalizeFertilizerMode,
     normalizeFertilizerLandTypes,
     normalizeTimeString,
     normalizeIntervals,
