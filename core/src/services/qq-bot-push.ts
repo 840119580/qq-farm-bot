@@ -99,6 +99,9 @@ interface RuntimeStatus {
 // 活动实例引用：供 admin 路由访问（无需改动 provider/context 链路）
 let activeService: any = null;
 
+const DEFAULT_APP_ID = '';
+const DEFAULT_EVENT_KEYS = ['sell_success', '照顾好友', '领取任务', 'ranch_task_claim', 'ranch_steal', '收获作物', '神秘商人自动购买'];
+
 function createQqBotPushService(options: any = {}) {
     const store = options.store;
     const log: (tag: string, msg: string, extra?: any) => void = typeof options.log === 'function'
@@ -150,9 +153,6 @@ function createQqBotPushService(options: any = {}) {
         users: [],
         relogin: null,
     };
-
-    const DEFAULT_APP_ID = '';
-    const DEFAULT_EVENT_KEYS = ['sell_success', '照顾好友', '领取任务', 'ranch_task_claim', 'ranch_steal', '收获作物', '神秘商人自动购买'];
 
     function normalizeConfig(input: any): QqBotPushConfig {
         const src = input && typeof input === 'object' ? input : {};
@@ -274,6 +274,36 @@ function createQqBotPushService(options: any = {}) {
 
     function getUsers(): QqBotUser[] {
         return discoveredUsers.slice().sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+    }
+
+    // 删除接收用户：同时清理账号路由与默认用户引用
+    function deleteUser(openid: string): { defaultChanged: boolean; newDefault: string } {
+        const target = String(openid || '');
+        if (!target) throw new Error('openid 不能为空');
+        const before = discoveredUsers.length;
+        discoveredUsers = discoveredUsers.filter(u => u.openid !== target);
+        if (discoveredUsers.length === before) throw new Error('未找到该用户');
+
+        // 清理账号路由里对该用户的引用
+        const routes: Record<string, string[]> = {};
+        for (const [accountId, list] of Object.entries(config.accountRoutes || {})) {
+            routes[accountId] = (list || []).filter(o => o !== target);
+        }
+        config = { ...config, accountRoutes: routes };
+
+        // 若删除的是默认用户，改用剩余最近的一个用户
+        let defaultChanged = false;
+        let newDefault = config.openid;
+        if (config.openid === target) {
+            const next = getUsers()[0];
+            newDefault = next ? next.openid : '';
+            config = { ...config, openid: newDefault };
+            status.openid = newDefault;
+            defaultChanged = true;
+        }
+        status.users = getUsers();
+        persistUsers();
+        return { defaultChanged, newDefault };
     }
 
     function openidFromInteraction(d: any): string {
@@ -1120,6 +1150,7 @@ function createQqBotPushService(options: any = {}) {
         selectUser,
         sendOfflineNotification,
         getUsers,
+        deleteUser,
     };
     activeService = service;
     return service;

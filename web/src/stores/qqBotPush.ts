@@ -137,6 +137,15 @@ export const useQqBotPushStore = defineStore('qqBotPush', () => {
     return data
   }
 
+  async function deleteUser(openid: string) {
+    const { data } = await api.post('/api/settings/qq-bot-push/delete-user', { openid })
+    if (data?.ok) {
+      config.value = { ...config.value, ...data.data?.config }
+      status.value = { ...status.value, ...data.data?.status }
+    }
+    return data
+  }
+
   function startPolling() {
     if (pollTimer) return
     pollTimer = setInterval(() => { fetch().catch(() => {}) }, 5000)
@@ -155,6 +164,7 @@ export const useQqBotPushStore = defineStore('qqBotPush', () => {
     testSend,
     capture,
     selectUser,
+    deleteUser,
     startPolling,
     stopPolling,
   }
